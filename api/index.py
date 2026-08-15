@@ -9,6 +9,8 @@ app = Flask(__name__)
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 EITAAYAR_TOKEN = os.environ.get("EITAAYAR_TOKEN", "")
 
+OPENAI_MODEL = "gpt-4o-mini"
+
 
 HTML = """
 <!doctype html>
@@ -153,6 +155,17 @@ HTML = """
             margin-top: 15px;
         }
 
+        .error-box {
+            background: #fdeaea;
+            border-right: 5px solid #d32f2f;
+            border-radius: 18px;
+            padding: 20px;
+            line-height: 2;
+            margin-top: 15px;
+            display: none;
+            white-space: pre-wrap;
+        }
+
         .loading {
             text-align: center;
             padding: 25px;
@@ -210,6 +223,8 @@ HTML = """
         <div class="loading" id="loading">
             ⏳ در حال تحلیل پست...
         </div>
+
+        <div class="error-box" id="errorBox"></div>
 
     </div>
 
@@ -279,10 +294,13 @@ async function analyzePost() {
     const button = document.getElementById("analyzeButton");
     const loading = document.getElementById("loading");
     const result = document.getElementById("result");
+    const errorBox = document.getElementById("errorBox");
 
     button.disabled = true;
     loading.style.display = "block";
     result.style.display = "none";
+    errorBox.style.display = "none";
+    errorBox.innerText = "";
 
     try {
 
@@ -303,7 +321,19 @@ async function analyzePost() {
         const data = await response.json();
 
         if (!response.ok) {
-            throw new Error(data.error || "خطا در تحلیل پست");
+
+            const message =
+                data.error ||
+                "خطا در تحلیل پست";
+
+            const details =
+                data.details ||
+                "";
+
+            throw new Error(
+                message +
+                (details ? "\\n\\nجزئیات: " + details : "")
+            );
         }
 
         document.getElementById("score").innerText =
@@ -327,7 +357,13 @@ async function analyzePost() {
 
     } catch (error) {
 
-        alert("❌ " + error.message);
+        errorBox.innerText = "❌ " + error.message;
+        errorBox.style.display = "block";
+
+        window.scrollTo({
+            top: errorBox.offsetTop - 20,
+            behavior: "smooth"
+        });
 
     } finally {
 
@@ -351,6 +387,7 @@ def home():
 
 @app.route("/api/health")
 def health():
+
     return jsonify({
         "status": "ok",
         "message": "ادمین هوشمند شیفتگان ۳۱۳ فعال است",
@@ -358,7 +395,8 @@ def health():
         "auto_edit": False,
         "auto_publish": False,
         "eitaayar_token_configured": bool(EITAAYAR_TOKEN),
-        "openai_configured": bool(OPENAI_API_KEY)
+        "openai_configured": bool(OPENAI_API_KEY),
+        "openai_model": OPENAI_MODEL
     })
 
 
@@ -372,14 +410,18 @@ def analyze():
         text = (data.get("text") or "").strip()
 
         if not text:
+
             return jsonify({
                 "error": "متن پست خالی است."
             }), 400
 
+
         if not OPENAI_API_KEY:
+
             return jsonify({
-                "error": "OPENAI_API_KEY در Vercel تنظیم نشده است."
+                "error": "OPENAI_API_KEY در محیط Vercel پیدا نشد."
             }), 500
+
 
         prompt = f"""
 تو دستیار حرفه‌ای مدیریت یک کانال فارسی هستی.
@@ -394,14 +436,13 @@ def analyze():
 - متن پیشنهادی را محترمانه، جذاب، روان و مناسب کانال مذهبی تنظیم کن.
 - محتوای اصلی پست را بدون دلیل تغییر نده.
 - اگر متن مناسب است، پیشنهاد بده فقط کمی بهتر شود.
-- از تیتر جذاب، جمله‌بندی بهتر و دعوت مناسب به تعامل استفاده کن.
 - از اغراق، اطلاعات ساختگی و ادعاهای بدون منبع خودداری کن.
 
 پست:
 
 {text}
 
-پاسخ را فقط به صورت JSON معتبر بده:
+پاسخ باید فقط JSON معتبر باشد و دقیقاً این ساختار را داشته باشد:
 
 {{
   "score": 0,
@@ -413,105 +454,262 @@ def analyze():
 امتیاز را از 0 تا 10 تعیین کن.
 """
 
+
         payload = {
-            "model": "gpt-4o-mini",
-            "messages": [
+
+            "model": OPENAI_MODEL,
+
+            "input": [
+
                 {
                     "role": "system",
-                    "content": "تو یک ویراستار حرفه‌ای فارسی و دستیار مدیریت کانال هستی."
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": "تو یک ویراستار حرفه‌ای فارسی و دستیار مدیریت کانال هستی."
+                        }
+                    ]
                 },
+
                 {
                     "role": "user",
-                    "content": prompt
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": prompt
+                        }
+                    ]
                 }
+
             ],
-            "temperature": 0.4
+
+            "text": {
+                "format": {
+                    "type": "json_object"
+                }
+            },
+
+            "temperature": 0.4,
+
+            "store": False
         }
 
+
         req = urllib.request.Request(
-            "https://api.openai.com/v1/chat/completions",
+
+            "https://api.openai.com/v1/responses",
+
             data=json.dumps(payload).encode("utf-8"),
+
             headers={
                 "Content-Type": "application/json",
                 "Authorization": "Bearer " + OPENAI_API_KEY
             },
+
             method="POST"
         )
 
+
         with urllib.request.urlopen(req, timeout=60) as response:
 
-            result = json.loads(
-                response.read().decode("utf-8")
-            )
+            response_body = response.read().decode("utf-8")
 
-        content = result["choices"][0]["message"]["content"].strip()
+            result = json.loads(response_body)
 
-        # حذف احتمالی markdown اطراف JSON
+            request_id = response.headers.get("x-request-id", "")
+
+
+        # استخراج متن خروجی Responses API
+
+        content = ""
+
+        for item in result.get("output", []):
+
+            if item.get("type") == "message":
+
+                for part in item.get("content", []):
+
+                    if part.get("type") == "output_text":
+
+                        content += part.get("text", "")
+
+
+        content = content.strip()
+
+
+        if not content:
+
+            return jsonify({
+                "error": "هوش مصنوعی پاسخ متنی برنگرداند.",
+                "details": "OpenAI response did not contain output_text."
+            }), 500
+
+
+        # پاک کردن احتمالی Markdown
+
         if content.startswith("```"):
+
             content = content.replace("```json", "")
             content = content.replace("```", "")
             content = content.strip()
 
+
         ai_result = json.loads(content)
 
+
         score = ai_result.get("score", 0)
+
 
         try:
             score = float(score)
         except:
             score = 0
 
+
         score = max(0, min(10, score))
 
+
         return jsonify({
+
             "score": score,
+
             "analysis": ai_result.get(
                 "analysis",
                 "تحلیل انجام شد."
             ),
+
             "suggestion": ai_result.get(
                 "suggestion",
                 "پیشنهاد خاصی ارائه نشده است."
             ),
+
             "edited_text": ai_result.get(
                 "edited_text",
                 text
             ),
 
-            # امنیت سیستم:
             "auto_edit": False,
+
             "auto_publish": False,
-            "requires_admin_approval": True
+
+            "requires_admin_approval": True,
+
+            "request_id": request_id
+
         })
+
 
     except urllib.error.HTTPError as e:
 
+        status_code = e.code
+
+        request_id = e.headers.get("x-request-id", "")
+
         try:
-            error_body = e.read().decode("utf-8")
+
+            raw_body = e.read().decode("utf-8")
+
         except:
-            error_body = ""
+
+            raw_body = ""
+
+
+        # تلاش برای استخراج پیام استاندارد OpenAI
+
+        error_message = ""
+
+        error_type = ""
+
+        error_code = ""
+
+
+        try:
+
+            error_json = json.loads(raw_body)
+
+            error_object = error_json.get("error", {})
+
+            error_message = error_object.get("message", "")
+
+            error_type = error_object.get("type", "")
+
+            error_code = error_object.get("code", "")
+
+        except:
+
+            pass
+
+
+        # هرگز API Key یا Authorization را نمایش نمی‌دهیم
+
+        safe_details = (
+
+            "HTTP status: " + str(status_code)
+
+        )
+
+
+        if error_type:
+            safe_details += "\\nنوع خطا: " + str(error_type)
+
+
+        if error_code:
+            safe_details += "\\nکد خطا: " + str(error_code)
+
+
+        if error_message:
+            safe_details += "\\nپیام OpenAI: " + str(error_message)
+
+
+        if request_id:
+            safe_details += "\\nRequest ID: " + str(request_id)
+
 
         return jsonify({
-            "error": "خطا از سرویس هوش مصنوعی",
-            "details": error_body[:500]
+
+            "error": "OpenAI درخواست را قبول نکرد.",
+
+            "details": safe_details
+
         }), 500
+
 
     except json.JSONDecodeError:
 
         return jsonify({
-            "error": "پاسخ هوش مصنوعی قابل پردازش نبود. دوباره امتحان کنید."
+
+            "error": "پاسخ هوش مصنوعی قابل پردازش نبود.",
+
+            "details": "پاسخ دریافتی JSON معتبر نبود."
+
         }), 500
+
+
+    except urllib.error.URLError as e:
+
+        return jsonify({
+
+            "error": "ارتباط سرور Vercel با OpenAI برقرار نشد.",
+
+            "details": str(e.reason)
+
+        }), 500
+
 
     except Exception as e:
 
         return jsonify({
-            "error": "خطای داخلی سرور",
+
+            "error": "خطای داخلی سرور.",
+
             "details": str(e)
+
         }), 500
 
 
 if __name__ == "__main__":
+
     app.run(
         host="0.0.0.0",
         port=int(os.environ.get("PORT", 5000))
-                )
+    )
